@@ -1,0 +1,143 @@
+安装docker
+sudo yum remove docker \
+                  docker-client \
+                  docker-client-latest \
+                  docker-common \
+                  docker-latest \
+                  docker-latest-logrotate \
+                  docker-logrotate \
+                  docker-selinux \
+                  docker-engine-selinux \
+                  docker-engine
+sudo yum install -y yum-utils \
+  device-mapper-persistent-data \
+  lvm2
+sudo yum-config-manager --add-repo http://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo
+sudo yum-config-manager --enable docker-ce-edge
+sudo yum install docker-ce -y
+sudo systemctl start docker
+sudo systemctl enable docker
+安装Docker Compose
+yum -y install docker-compose
+
+下载Harbor
+https://storage.googleapis.com/harbor-releases/release-1.8.0/harbor-offline-installer-v1.8.1.tgz
+
+解压
+tar xfv harbor-offline-installer-v1.8.1.tgz
+cd harbor
+vim harbor.yml
+
+
+导入离线镜像包
+docker load -i harbor.v1.8.1.tar.gz
+
+执行install.sh安装harbor
+bash install.sh
+
+在浏览器中访问预先设置的hostname值
+
+登录报错
+docker login 172.16.35.81
+#Error response from daemon: Get https://172.16.35.81/v2/: dial tcp 172.16.35.81:443: connect: connection refused
+
+这是由于默认 docker registry 使用的是 https, 而目前的 Harbor 使用的是 http, 解决方法如下
+
+vim /usr/lib/systemd/system/docker.service
+ExecStart=/usr/bin/dockerd --insecure-registry 172.16.35.81 -H fd:// --containerd=/run/containerd/containerd.sock
+systemctl daemon-reload
+systemctl restart docker
+
+cd harbor
+./prepare
+docker-compose down -v
+docker-compose up -d
+docker login 172.16.35.81
+成功登陆
+
+Harbor 推送拉取镜像
+docker images
+拉取一个测试镜像
+docker pull daocloud.io/daocloud/phpmyadmin
+标记本地镜像, 将其归入某一仓库
+docker tag daocloud.io/daocloud/phpmyadmin:latest 172.16.35.81/library/phpmyadmin:v1
+将本地镜像推送到镜像仓库
+docker push 172.16.35.81/library/phpmyadmin:v1
+删除原来镜像
+docker rmi 172.16.35.81/library/phpmyadmin:v1
+拉取镜像
+docker pull 172.16.35.81/library/phpmyadmin:v1
+
+
+
+
+使用HTTPS访问配置Harbor
+获得证书授权
+openssl genrsa -out ca.key 4096
+
+openssl req -x509 -new -nodes -sha512 -days 3650 \
+    -subj "/C=TW/ST=Taipei/L=Taipei/O=example/OU=Personal/CN=yourdomain.com" \
+    -key ca.key \
+    -out ca.crt
+
+获得服务器证书
+创建自己的私钥
+openssl genrsa -out yourdomain.com.key 4096
+生成证书签名请求
+openssl req -sha512 -new \
+    -subj "/C=TW/ST=Taipei/L=Taipei/O=example/OU=Personal/CN=yourdomain.com" \
+    -key yourdomain.com.key \
+    -out yourdomain.com.csr 
+
+生成注册表主机的证书
+cat > v3.ext <<-EOF
+authorityKeyIdentifier=keyid,issuer
+basicConstraints=CA:FALSE
+keyUsage = digitalSignature, nonRepudiation, keyEncipherment, dataEncipherment
+extendedKeyUsage = serverAuth 
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1=yourdomain.com
+DNS.2=yourdomain
+DNS.3=hostname
+EOF
+
+openssl x509 -req -sha512 -days 3650 \
+    -extfile v3.ext \
+    -CA ca.crt -CAkey ca.key -CAcreateserial \
+    -in yourdomain.com.csr \
+    -out yourdomain.com.crt
+
+配置服务器证书和港口密钥
+cp yourdomain.com.crt /data/cert/
+cp yourdomain.com.key /data/cert/
+
+为Docker配置服务器证书，密钥和CA
+openssl x509 -inform PEM -in yourdomain.com.crt -out yourdomain.com.cert
+cp yourdomain.com.cert /etc/docker/certs.d/yourdomain.com/
+cp yourdomain.com.key /etc/docker/certs.d/yourdomain.com/
+cp ca.crt /etc/docker/certs.d/yourdomain.com/
+
+配置harbor
+vim harbor
+#set hostname
+hostname: yourdomain.com
+
+http:
+  port: 80
+
+https:
+  # https port for harbor, default is 443
+  port: 443
+  # The path of cert and key files for nginx
+  certificate: /data/cert/yourdomain.com.crt
+  private_key: /data/cert/yourdomain.com.key
+
+  ......
+
+为Harbor生成配置文件
+./prepare
+docker-compose down -v
+docker-compose up -d
+
